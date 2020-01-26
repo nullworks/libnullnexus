@@ -24,6 +24,7 @@ class WebSocketClient
 {
     // Settings
     std::string host, port, endpoint;
+    std::vector<std::pair<std::string, std::string>> custom_connect_headers;
     // Message callback
     std::function<void(std::string)> callback;
 
@@ -116,7 +117,13 @@ class WebSocketClient
             // Connect to the websocket
             net::connect(ws->next_layer(), results.begin(), results.end());
             // Set a decorator to change the User-Agent of the handshake
-            ws->set_option(websocket::stream_base::decorator([](websocket::request_type &req) { req.set(http::field::user_agent, std::string(BOOST_BEAST_VERSION_STRING) + " websocket-client-coro"); }));
+            ws->set_option(websocket::stream_base::decorator([&](websocket::request_type &req) {
+                for (auto &entry : custom_connect_headers)
+                {
+                    req.set(entry.first, entry.second);
+                }
+                req.set(http::field::user_agent, std::string(BOOST_BEAST_VERSION_STRING) + " websocket-client-coro");
+            }));
             // Perform the websocket handshake
             ws->handshake(host, endpoint);
 
@@ -268,6 +275,12 @@ public:
             }
         }
         return true;
+    }
+
+    void setCustomHeaders(std::vector<std::pair<std::string, std::string>> headers)
+    {
+        std::lock_guard lock(mutex);
+        custom_connect_headers = headers;
     }
 
     WebSocketClient(std::string host, std::string port, std::string endpoint, std::function<void(std::string)> callback) : host(host), port(port), endpoint(endpoint), callback(callback)

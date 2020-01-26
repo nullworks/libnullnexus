@@ -13,10 +13,11 @@ class NullNexus
     std::unique_ptr<WebSocketClient> ws;
     bool settings = false;
     std::string username;
+    int usercolour = 0x0;
 
     // Callbacks
     std::optional<std::function<bool(boost::property_tree::ptree tree)>> callback_custom;
-    std::optional<std::function<void(std::string username, std::string message)>> callback_chat;
+    std::optional<std::function<void(std::string username, std::string message, int colour)>> callback_chat;
 
     bool sendAuthenticatedMessage(bool reliable, std::string type, boost::property_tree::ptree child)
     {
@@ -39,17 +40,18 @@ class NullNexus
     {
         auto data = tree.get_child("data");
         if (callback_chat)
-            (*callback_chat)(data.get<std::string>("user"), data.get<std::string>("msg"));
+            (*callback_chat)(data.get<std::string>("user"), data.get<std::string>("msg"), data.get<int>("colour"));
     }
 
     void handleMessage(std::string msg)
     {
         std::cout << "CO: New message: " << msg << std::endl;
-        try {
+        try
+        {
             // Parse message
-            std::istringstream iss (msg);
+            std::istringstream iss(msg);
             boost::property_tree::ptree pt;
-            boost::property_tree::read_json (iss, pt);
+            boost::property_tree::read_json(iss, pt);
 
             if (callback_custom)
                 // If the custom callback handled this message, we should stop
@@ -60,15 +62,43 @@ class NullNexus
             std::cout << type << std::endl;
             if (type == "chat")
                 handleMessage_chat(pt);
-        }  catch (...) { }
+        }
+        catch (...)
+        {
+        }
+    }
+    void setCustomHeaders()
+    {
+        if (ws)
+            ws->setCustomHeaders({ { "nullnexus_colour", std::to_string(usercolour) } });
     }
 
 public:
     // Change some setting
-    void changeSettings(std::optional<std::string> name = std::nullopt)
+    void changeSettings(std::optional<std::string> name = std::nullopt, std::optional<int> colour = std::nullopt)
     {
         settings = true;
         username = name ? *name : "Anon-" + std::to_string(rand() % 9000 + 1000);
+        // RNG number gen
+        if (!colour && !usercolour)
+        {
+            int r  = (rand() % 255 + 255) / 2;
+            int g  = (rand() % 255 + 255) / 2;
+            int b  = (rand() % 255 + 255) / 2;
+            colour = (r << 16) + (g << 8) + b;
+        }
+        boost::property_tree::ptree pt;
+        // Set colour
+        if (colour && *colour != usercolour)
+        {
+            usercolour = *colour;
+            pt.put("colour", usercolour);
+        }
+        if (pt.size())
+        {
+            setCustomHeaders();
+            sendAuthenticatedMessage(false, "settings", pt);
+        }
     }
     // Connect to a specific server
     void connect(bool state = true, std::string host = "localhost", std::string port = "3000", std::string endpoint = "/client/v1")
@@ -77,7 +107,9 @@ public:
             changeSettings();
         if (state)
         {
-            ws = std::make_unique<WebSocketClient>(host, port, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
+            if (!ws)
+                ws = std::make_unique<WebSocketClient>(host, port, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
+            setCustomHeaders();
             ws->start();
         }
         else
@@ -103,7 +135,7 @@ public:
         callback_custom = handler;
     }
     // Handle chat messages
-    void setHandlerChat(std::function<void(std::string username, std::string message)> handler)
+    void setHandlerChat(std::function<void(std::string username, std::string message, int colour)> handler)
     {
         callback_chat = handler;
     }
