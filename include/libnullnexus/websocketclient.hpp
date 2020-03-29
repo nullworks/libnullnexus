@@ -50,7 +50,7 @@ class WebSocketClient
 
     void log(std::string msg)
     {
-        std::cout << msg << std::endl;
+        // std::cout << msg << std::endl;
     }
 
     // Reconnect after an error, run in a different thread than the worker
