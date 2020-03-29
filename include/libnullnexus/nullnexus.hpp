@@ -172,7 +172,7 @@ public:
         ws->start();
     }
     // Connect to a specific server
-    void connect(std::string host = "localhost", std::string port = "3000", std::string endpoint = "/client/v1")
+    void connect(std::string host = "localhost", std::string port = "3000", std::string endpoint = "/api/v1/client")
     {
         if (!settings_set)
             changeData();

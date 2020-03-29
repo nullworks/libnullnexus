@@ -265,7 +265,7 @@ public:
         {
             try
             {
-                if (!ws)
+                if (!ws || !ws->is_open())
                     return false;
                 ws->write(net::buffer(msg));
             }
