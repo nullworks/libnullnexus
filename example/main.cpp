@@ -3,7 +3,7 @@
 
 #include "libnullnexus/nullnexus.hpp"
 
-void msg(std::string username, std::string msg)
+void msg(std::string username, std::string msg, int colour)
 {
     std::cout << username << " " << msg << std::endl;
 }
@@ -11,9 +11,9 @@ void msg(std::string username, std::string msg)
 int main()
 {
     NullNexus online;
-    online.changeSettings();
+    online.changeData();
     online.setHandlerChat(msg);
     online.connect();
-    online.sendChat("BRUH");
+    online.sendChat("Test message");
     std::this_thread::sleep_for(std::chrono_literals::operator""s(5));
 }

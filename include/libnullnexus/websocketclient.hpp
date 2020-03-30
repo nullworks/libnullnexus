@@ -20,6 +20,8 @@ namespace websocket = beast::websocket;     // from <boost/beast/websocket.hpp>
 namespace net       = boost::asio;          // from <boost/asio.hpp>
 using tcp           = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
 
+constexpr int RESTART_WAIT_TIME = 10;
+
 class WebSocketClient
 {
     // Settings
@@ -60,6 +62,7 @@ class WebSocketClient
         if (!shouldBeActive)
             return;
         internalStop();
+        std::this_thread::sleep_for(std::chrono_literals::operator""s(RESTART_WAIT_TIME));
         internalStart();
     }
 
@@ -146,7 +149,7 @@ class WebSocketClient
     void scheduleDelayedStart()
     {
         start_delay_timer.cancel();
-        start_delay_timer.expires_from_now(boost::posix_time::seconds(10));
+        start_delay_timer.expires_from_now(boost::posix_time::seconds(RESTART_WAIT_TIME));
         start_delay_timer.async_wait(std::bind(&WebSocketClient::handler_startDelayTimer, this, std::placeholders::_1));
     }
 
