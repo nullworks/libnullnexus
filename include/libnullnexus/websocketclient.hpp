@@ -5,6 +5,9 @@
 #include <boost/asio/connect.hpp>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#ifdef __linux__
+#include <boost/asio/local/stream_protocol.hpp>
+#endif
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 
@@ -19,13 +22,36 @@ namespace http      = beast::http;          // from <boost/beast/http.hpp>
 namespace websocket = beast::websocket;     // from <boost/beast/websocket.hpp>
 namespace net       = boost::asio;          // from <boost/asio.hpp>
 using tcp           = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
+#ifdef __linux__
+namespace local = boost::asio::local;
+#endif
 
 constexpr int RESTART_WAIT_TIME = 10;
+
+#ifdef __linux__
+#define NULLNEXUS_GETWS(code) \
+    if (isunix)               \
+    {                         \
+        unixws->code;         \
+    }                         \
+    else                      \
+    {                         \
+        tcpws->code;          \
+    }
+#define NULLNEXUS_VALIDWS ((isunix && unixws) || (!isunix && tcpws))
+#else
+#define NULLNEXUS_GETWS(code) \
+    {                         \
+        tcpws->code;          \
+    }
+#define NULLNEXUS_VALIDWS (tcpws)
+#endif
 
 class WebSocketClient
 {
     // Settings
     std::string host, port, endpoint;
+    bool isunix;
     std::vector<std::pair<std::string, std::string>> custom_connect_headers;
     // Message callback
     std::function<void(std::string)> callback;
@@ -33,7 +59,10 @@ class WebSocketClient
     // ASIO
     std::recursive_mutex mutex;
     net::io_context ioc;
-    std::optional<websocket::stream<tcp::socket>> ws;
+    std::optional<websocket::stream<tcp::socket>> tcpws;
+#ifdef __linux__
+    std::optional<websocket::stream<local::stream_protocol::socket>> unixws;
+#endif
     std::optional<net::executor_work_guard<decltype(ioc.get_executor())>> work;
     beast::flat_buffer buf;
 
@@ -101,7 +130,7 @@ class WebSocketClient
     // Start async reading from ASIO websocket
     void startAsyncRead()
     {
-        ws->async_read(buf, beast::bind_front_handler(&WebSocketClient::handler_onread, this));
+        NULLNEXUS_GETWS(async_read(buf, beast::bind_front_handler(&WebSocketClient::handler_onread, this)))
     }
 
     // Called by internalStart to run the actual connection code and return true/false
@@ -111,24 +140,41 @@ class WebSocketClient
         {
             tcp::resolver resolver{ ioc };
 
-            // Look up the domain name
-            auto const results = resolver.resolve(host, port);
+#ifdef __linux__
+            if (isunix)
+            {
+                local::stream_protocol::endpoint ep(host);
 
-            // Create a new websocket, old one can't be used anymore after a .close() call
-            ws.emplace(ioc);
+                // Create a new websocket, old one can't be used anymore after a .close() call
+                unixws.emplace(ioc);
 
-            // Connect to the websocket
-            net::connect(ws->next_layer(), results.begin(), results.end());
+                // Connect to the websocket
+                unixws->next_layer().connect(ep);
+            }
+            else
+            {
+#endif
+                // Look up the domain name
+                auto const results = resolver.resolve(host, port);
+
+                // Create a new websocket, old one can't be used anymore after a .close() call
+                tcpws.emplace(ioc);
+
+                // Connect to the websocket
+                net::connect(tcpws->next_layer(), results.begin(), results.end());
+#ifdef __linux__
+            }
+#endif
             // Set a decorator to change the User-Agent of the handshake
-            ws->set_option(websocket::stream_base::decorator([&](websocket::request_type &req) {
+            NULLNEXUS_GETWS(set_option(websocket::stream_base::decorator([&](websocket::request_type &req) {
                 for (auto &entry : custom_connect_headers)
                 {
                     req.set(entry.first, entry.second);
                 }
                 req.set(http::field::user_agent, std::string(BOOST_BEAST_VERSION_STRING) + " websocket-client-coro");
-            }));
+            })));
             // Perform the websocket handshake
-            ws->handshake(host, endpoint);
+            NULLNEXUS_GETWS(handshake(host, endpoint))
 
             log("CO: Connected to the server.");
 
@@ -186,8 +232,10 @@ class WebSocketClient
     {
         // Prevent more connect attempts
         start_delay_timer.cancel();
-        if (ws && ws->is_open())
-            ws->async_close(websocket::close_code::normal, [](const boost::system::error_code &) {});
+        if (NULLNEXUS_VALIDWS)
+        {
+            NULLNEXUS_GETWS(async_close(websocket::close_code::normal, [](const boost::system::error_code &) {}));
+        }
         // Stop message queue from running while stopped
         message_queue_timer.cancel();
 
@@ -214,14 +262,14 @@ class WebSocketClient
     void trySendMessageQueue()
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        if (!shouldBeActive || !ws || !ws->is_open())
+        if (!shouldBeActive || !NULLNEXUS_VALIDWS)
             return;
 
         while (messages.size())
         {
             try
             {
-                ws->write(net::buffer(messages.front()));
+                NULLNEXUS_GETWS(write(net::buffer(messages.front())));
                 messages.pop();
             }
             catch (...)
@@ -268,9 +316,9 @@ public:
         {
             try
             {
-                if (!ws || !ws->is_open())
+                if (!NULLNEXUS_VALIDWS)
                     return false;
-                ws->write(net::buffer(msg));
+                NULLNEXUS_GETWS(write(net::buffer(msg)));
             }
             catch (...)
             {
@@ -288,10 +336,20 @@ public:
 
     WebSocketClient(std::string host, std::string port, std::string endpoint, std::function<void(std::string)> callback) : host(host), port(port), endpoint(endpoint), callback(callback)
     {
+        isunix = false;
     }
+#ifdef __linux__
+    WebSocketClient(std::string unixsocket_addr, std::string endpoint, std::function<void(std::string)> callback) : host(unixsocket_addr), endpoint(endpoint), callback(callback)
+    {
+        isunix = true;
+    }
+#endif
 
     ~WebSocketClient()
     {
         stop();
     }
 };
+
+#undef NULLNEXUS_GETWS
+#undef NULLNEXUS_VALIDWS

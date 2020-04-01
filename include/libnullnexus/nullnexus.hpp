@@ -182,6 +182,18 @@ public:
         setCustomHeaders();
         ws->start();
     }
+#ifdef __linux__
+    void connectunix(std::string socket = "/tmp/nullnexus.sock", std::string endpoint = "/api/v1/client")
+    {
+        if (!settings_set)
+            changeData();
+        if (ws)
+            ws.reset();
+        ws = std::make_unique<WebSocketClient>(socket, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
+        setCustomHeaders();
+        ws->start();
+    }
+#endif
     // Send a chat message
     bool sendChat(std::string message, std::string location = "public")
     {
