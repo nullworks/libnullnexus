@@ -38,13 +38,13 @@ constexpr int RESTART_WAIT_TIME = 10;
     {                         \
         tcpws->code;          \
     }
-#define NULLNEXUS_VALIDWS ((isunix && unixws) || (!isunix && tcpws))
+#define NULLNEXUS_VALIDWS (isunix ? (unixws && unixws->is_open()) : (tcpws && tcpws->is_open()))
 #else
 #define NULLNEXUS_GETWS(code) \
     {                         \
         tcpws->code;          \
     }
-#define NULLNEXUS_VALIDWS (tcpws)
+#define NULLNEXUS_VALIDWS (tcpws && tcpws->is_open())
 #endif
 
 class WebSocketClient
@@ -212,7 +212,7 @@ class WebSocketClient
     }
 
     // Do everything needed to start
-    void internalStart()
+    void internalStart(bool async = false)
     {
         log("CO: Connecting to server");
 
@@ -223,7 +223,7 @@ class WebSocketClient
             worker.emplace(&WebSocketClient::runIO, this);
         }
 
-        if (!doConnectionAttempt())
+        if (async || !doConnectionAttempt())
             scheduleDelayedStart();
     }
 
@@ -269,6 +269,8 @@ class WebSocketClient
         {
             try
             {
+                if (!NULLNEXUS_VALIDWS)
+                    throw std::exception();
                 NULLNEXUS_GETWS(write(net::buffer(messages.front())));
                 messages.pop();
             }
@@ -284,13 +286,13 @@ class WebSocketClient
     /* ~Functions for handling the sending of messages~ */
 
 public:
-    void start()
+    void start(bool async = false)
     {
         std::lock_guard lock(mutex);
         if (shouldBeActive)
             return;
         shouldBeActive = true;
-        internalStart();
+        internalStart(async);
     }
     void stop()
     {

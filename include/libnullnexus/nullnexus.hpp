@@ -14,13 +14,18 @@ public:
     // TF2 Server info + steamid, used for authenticating with other nullnexus users
     struct TF2Server
     {
-        bool connected      = false;
-        std::string ip      = "";
-        std::string port    = "";
-        std::string steamid = "";
+        bool connected;
+        std::string ip;
+        std::string port;
+        std::string steamid;
+        int server_spawn_count;
+
         bool operator==(TF2Server &other)
         {
-            return connected == other.connected && ip == other.ip && port == other.port && steamid == other.steamid;
+            return connected == other.connected && ip == other.ip && port == other.port && steamid == other.steamid && server_spawn_count == other.server_spawn_count;
+        }
+        TF2Server(bool connected = false, std::string ip = "", std::string port = "", std::string steamid = "", int server_spawn_count = -1) : connected(connected), ip(ip), port(port), steamid(steamid), server_spawn_count(server_spawn_count)
+        {
         }
     };
 
@@ -108,6 +113,7 @@ private:
             headers.push_back({ "nullnexus_server_ip", settings.tf2server->ip });
             headers.push_back({ "nullnexus_server_port", settings.tf2server->port });
             headers.push_back({ "nullnexus_server_steamid", settings.tf2server->steamid });
+            headers.push_back({ "nullnexus_server_server_spawn_count", std::to_string(settings.tf2server->server_spawn_count) });
         }
         if (ws)
             ws->setCustomHeaders(headers);
@@ -149,6 +155,7 @@ public:
                 pt_server.put("ip", newsettings.tf2server->ip);
                 pt_server.put("port", newsettings.tf2server->port);
                 pt_server.put("steamid", newsettings.tf2server->steamid);
+                pt_server.put("server_spawn_count", std::to_string(settings.tf2server->server_spawn_count));
             }
             settings.tf2server = *newsettings.tf2server;
             pt.put_child("server", pt_server);
@@ -165,14 +172,14 @@ public:
         if (ws)
             ws->stop();
     }
-    void reconnect()
+    void reconnect(bool async = false)
     {
         if (ws)
             ws->stop();
-        ws->start();
+        ws->start(async);
     }
     // Connect to a specific server
-    void connect(std::string host = "localhost", std::string port = "3000", std::string endpoint = "/api/v1/client")
+    void connect(std::string host = "localhost", std::string port = "3000", std::string endpoint = "/api/v1/client", bool async = false)
     {
         if (!settings_set)
             changeData();
@@ -180,10 +187,10 @@ public:
             ws.reset();
         ws = std::make_unique<WebSocketClient>(host, port, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
         setCustomHeaders();
-        ws->start();
+        ws->start(async);
     }
 #ifdef __linux__
-    void connectunix(std::string socket = "/tmp/nullnexus.sock", std::string endpoint = "/api/v1/client")
+    void connectunix(std::string socket = "/tmp/nullnexus.sock", std::string endpoint = "/api/v1/client", bool async = false)
     {
         if (!settings_set)
             changeData();
@@ -191,7 +198,7 @@ public:
             ws.reset();
         ws = std::make_unique<WebSocketClient>(socket, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
         setCustomHeaders();
-        ws->start();
+        ws->start(async);
     }
 #endif
     // Send a chat message
