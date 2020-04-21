@@ -261,7 +261,7 @@ class WebSocketClient
 
     void trySendMessageQueue()
     {
-        std::lock_guard<std::recursive_mutex> lock(mutex);
+        std::lock_guard lock(mutex);
         if (!shouldBeActive || !NULLNEXUS_VALIDWS)
             return;
 

@@ -183,8 +183,6 @@ public:
     {
         if (!settings_set)
             changeData();
-        if (ws)
-            ws.reset();
         ws = std::make_unique<WebSocketClient>(host, port, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
         setCustomHeaders();
         ws->start(async);
@@ -194,8 +192,6 @@ public:
     {
         if (!settings_set)
             changeData();
-        if (ws)
-            ws.reset();
         ws = std::make_unique<WebSocketClient>(socket, endpoint, std::bind(&NullNexus::handleMessage, this, std::placeholders::_1));
         setCustomHeaders();
         ws->start(async);
