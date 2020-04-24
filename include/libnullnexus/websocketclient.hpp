@@ -84,24 +84,13 @@ class WebSocketClient
         // std::cout << msg << std::endl;
     }
 
-    // Reconnect after an error, run in a different thread than the worker
-    void doReconnect()
-    {
-        std::lock_guard lock(mutex);
-        if (!shouldBeActive)
-            return;
-        internalStop();
-        std::this_thread::sleep_for(std::chrono_literals::operator""s(RESTART_WAIT_TIME));
-        internalStart();
-    }
-
     void handle_handler_error(const boost::system::error_code &ec)
     {
         if (ec == net::error::basic_errors::operation_aborted)
             return;
         log(ec.message() + " " + std::to_string(ec.value()));
-        std::thread t(&WebSocketClient::doReconnect, this);
-        t.detach();
+        std::lock_guard lock(mutex);
+        scheduleDelayedStart();
     }
 
     // Function to run the internal ASIO loop
@@ -127,44 +116,26 @@ class WebSocketClient
         startAsyncRead();
     }
 
+    void handler_ontcpconnect(const boost::system::error_code &ec)
+    {
+        if (ec)
+        {
+            scheduleDelayedStart();
+            return;
+        }
+        doWebsocketSetup();
+    }
+
     // Start async reading from ASIO websocket
     void startAsyncRead()
     {
         NULLNEXUS_GETWS(async_read(buf, beast::bind_front_handler(&WebSocketClient::handler_onread, this)))
     }
 
-    // Called by internalStart to run the actual connection code and return true/false
-    bool doConnectionAttempt()
+    void doWebsocketSetup()
     {
         try
         {
-            tcp::resolver resolver{ ioc };
-
-#ifdef __linux__
-            if (isunix)
-            {
-                local::stream_protocol::endpoint ep(host);
-
-                // Create a new websocket, old one can't be used anymore after a .close() call
-                unixws.emplace(ioc);
-
-                // Connect to the websocket
-                unixws->next_layer().connect(ep);
-            }
-            else
-            {
-#endif
-                // Look up the domain name
-                auto const results = resolver.resolve(host, port);
-
-                // Create a new websocket, old one can't be used anymore after a .close() call
-                tcpws.emplace(ioc);
-
-                // Connect to the websocket
-                net::connect(tcpws->next_layer(), results.begin(), results.end());
-#ifdef __linux__
-            }
-#endif
             // Set a decorator to change the User-Agent of the handshake
             NULLNEXUS_GETWS(set_option(websocket::stream_base::decorator([&](websocket::request_type &req) {
                 for (auto &entry : custom_connect_headers)
@@ -181,13 +152,60 @@ class WebSocketClient
             startAsyncRead();
             // Send cached messages
             trySendMessageQueue();
-            return true;
+        }
+        catch (...)
+        {
+            // Some error. Trying again later.
+            log("CO: Websocket setup failed!");
+            scheduleDelayedStart();
+        }
+    }
+
+    // Called by internalStart to run the actual connection code
+    void doConnectionAttempt(bool async)
+    {
+        try
+        {
+            tcp::resolver resolver{ ioc };
+
+#ifdef __linux__
+            if (isunix)
+            {
+                local::stream_protocol::endpoint ep(host);
+
+                // Create a new websocket, old one can't be used anymore after a .close() call
+                unixws.emplace(ioc);
+
+                // Connect to the websocket
+                unixws->next_layer().connect(ep);
+                doWebsocketSetup();
+            }
+            else
+            {
+#endif
+                // Look up the domain name
+                auto const results = resolver.resolve(host, port);
+
+                // Create a new websocket, old one can't be used anymore after a .close() call
+                tcpws.emplace(ioc);
+
+                // Connect to the websocket
+                if (async)
+                    net::async_connect(tcpws->next_layer(), results.begin(), results.end(), std::bind(&WebSocketClient::handler_ontcpconnect, this, std::placeholders::_1));
+                else
+                {
+                    net::connect(tcpws->next_layer(), results.begin(), results.end());
+                    doWebsocketSetup();
+                }
+#ifdef __linux__
+            }
+#endif
         }
         catch (...)
         {
             // Some error. Trying again later.
             log("CO: Connection to server failed!");
-            return false;
+            scheduleDelayedStart();
         }
     }
 
@@ -207,8 +225,7 @@ class WebSocketClient
         std::lock_guard lock(mutex);
         if (!shouldBeActive)
             return;
-        if (!doConnectionAttempt())
-            scheduleDelayedStart();
+        doConnectionAttempt(true);
     }
 
     // Do everything needed to start
@@ -223,8 +240,10 @@ class WebSocketClient
             worker.emplace(&WebSocketClient::runIO, this);
         }
 
-        if (async || !doConnectionAttempt())
+        if (async)
             scheduleDelayedStart();
+        else
+            doConnectionAttempt(async);
     }
 
     // Do everything needed to stop the socket
