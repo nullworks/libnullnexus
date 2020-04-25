@@ -11,8 +11,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 
-#include <iostream>
-#include <mutex>
+#include <future>
 #include <string>
 #include <thread>
 #include <queue>
@@ -57,27 +56,24 @@ class WebSocketClient
     std::function<void(std::string)> callback;
 
     // ASIO
-    std::recursive_mutex mutex;
     net::io_context ioc;
+    std::optional<net::executor_work_guard<decltype(ioc.get_executor())>> work;
     std::optional<websocket::stream<tcp::socket>> tcpws;
 #ifdef __linux__
     std::optional<websocket::stream<local::stream_protocol::socket>> unixws;
 #endif
-    std::optional<net::executor_work_guard<decltype(ioc.get_executor())>> work;
     beast::flat_buffer buf;
 
     // Delayed start (after failed connect)
     net::deadline_timer start_delay_timer = net::deadline_timer(ioc);
-
-    // Message list with higher chance of delivery
+    // Message list with delivery when connected
     net::deadline_timer message_queue_timer = net::deadline_timer(ioc);
     std::queue<std::string> messages;
 
     // Worker thread
     std::optional<std::thread> worker;
 
-    // Internal variables
-    bool shouldBeActive = false;
+    bool is_running = false;
 
     void log(std::string msg)
     {
@@ -89,7 +85,6 @@ class WebSocketClient
         if (ec == net::error::basic_errors::operation_aborted)
             return;
         log(ec.message() + " " + std::to_string(ec.value()));
-        std::lock_guard lock(mutex);
         scheduleDelayedStart();
     }
 
@@ -112,18 +107,22 @@ class WebSocketClient
         // Send message to callback
         callback(beast::buffers_to_string(buf.data()));
         buf.clear();
-        // we technically stop reading after this call. We need to restart the handler.
+        // we stop reading after this call. We need to restart the handler.
         startAsyncRead();
     }
 
-    void handler_ontcpconnect(const boost::system::error_code &ec)
+    void handler_ontcpconnect(const boost::system::error_code &ec, std::promise<void> *ret)
     {
         if (ec)
         {
+            log("Connection to server failed!");
+            // Something is waiting for the first connection attempt to finish
+            if (ret)
+                ret->set_value();
             scheduleDelayedStart();
             return;
         }
-        doWebsocketSetup();
+        doWebsocketSetup(ret);
     }
 
     // Start async reading from ASIO websocket
@@ -132,7 +131,7 @@ class WebSocketClient
         NULLNEXUS_GETWS(async_read(buf, beast::bind_front_handler(&WebSocketClient::handler_onread, this)))
     }
 
-    void doWebsocketSetup()
+    void doWebsocketSetup(std::promise<void> *ret)
     {
         try
         {
@@ -148,6 +147,9 @@ class WebSocketClient
             NULLNEXUS_GETWS(handshake(host, endpoint))
 
             log("CO: Connected to the server.");
+            // Something is waiting for the first connection attempt to finish
+            if (ret)
+                ret->set_value();
 
             startAsyncRead();
             // Send cached messages
@@ -157,12 +159,15 @@ class WebSocketClient
         {
             // Some error. Trying again later.
             log("CO: Websocket setup failed!");
+            // Something is waiting for the first connection attempt to finish
+            if (ret)
+                ret->set_value();
             scheduleDelayedStart();
         }
     }
 
     // Called by internalStart to run the actual connection code
-    void doConnectionAttempt(bool async)
+    void doConnectionAttempt(std::promise<void> *ret = nullptr)
     {
         try
         {
@@ -178,7 +183,7 @@ class WebSocketClient
 
                 // Connect to the websocket
                 unixws->next_layer().connect(ep);
-                doWebsocketSetup();
+                doWebsocketSetup(ret);
             }
             else
             {
@@ -189,14 +194,7 @@ class WebSocketClient
                 // Create a new websocket, old one can't be used anymore after a .close() call
                 tcpws.emplace(ioc);
 
-                // Connect to the websocket
-                if (async)
-                    net::async_connect(tcpws->next_layer(), results.begin(), results.end(), std::bind(&WebSocketClient::handler_ontcpconnect, this, std::placeholders::_1));
-                else
-                {
-                    net::connect(tcpws->next_layer(), results.begin(), results.end());
-                    doWebsocketSetup();
-                }
+                net::async_connect(tcpws->next_layer(), results.begin(), results.end(), std::bind(&WebSocketClient::handler_ontcpconnect, this, std::placeholders::_1, ret));
 #ifdef __linux__
             }
 #endif
@@ -205,68 +203,10 @@ class WebSocketClient
         {
             // Some error. Trying again later.
             log("CO: Connection to server failed!");
+            // Something is waiting for the first connection attempt to finish
+            if (ret)
+                ret->set_value();
             scheduleDelayedStart();
-        }
-    }
-
-    // Use the io_context+worker to sheudule a restart
-    void scheduleDelayedStart()
-    {
-        start_delay_timer.cancel();
-        start_delay_timer.expires_from_now(boost::posix_time::seconds(RESTART_WAIT_TIME));
-        start_delay_timer.async_wait(std::bind(&WebSocketClient::handler_startDelayTimer, this, std::placeholders::_1));
-    }
-
-    // React to the timer being activated
-    void handler_startDelayTimer(const boost::system::error_code &ec)
-    {
-        if (ec)
-            return;
-        std::lock_guard lock(mutex);
-        if (!shouldBeActive)
-            return;
-        doConnectionAttempt(true);
-    }
-
-    // Do everything needed to start
-    void internalStart(bool async = false)
-    {
-        log("CO: Connecting to server");
-
-        if (!worker)
-        {
-            // Create generic work object, runIO will never exit until this work is destructed
-            work.emplace(ioc.get_executor());
-            worker.emplace(&WebSocketClient::runIO, this);
-        }
-
-        if (async)
-            scheduleDelayedStart();
-        else
-            doConnectionAttempt(async);
-    }
-
-    // Do everything needed to stop the socket
-    void internalStop()
-    {
-        // Prevent more connect attempts
-        start_delay_timer.cancel();
-        if (NULLNEXUS_VALIDWS)
-        {
-            NULLNEXUS_GETWS(async_close(websocket::close_code::normal, [](const boost::system::error_code &) {}));
-        }
-        // Stop message queue from running while stopped
-        message_queue_timer.cancel();
-
-        if (worker)
-        {
-            // Allow runIO to exit
-            work.reset();
-            // Join and delete the thread
-            worker->join();
-            worker.reset();
-            // Make IOC ready for the next run
-            ioc.restart();
         }
     }
 
@@ -277,11 +217,9 @@ class WebSocketClient
             return;
         trySendMessageQueue();
     }
-
     void trySendMessageQueue()
     {
-        std::lock_guard lock(mutex);
-        if (!shouldBeActive || !NULLNEXUS_VALIDWS)
+        if (!NULLNEXUS_VALIDWS)
             return;
 
         while (messages.size())
@@ -302,73 +240,147 @@ class WebSocketClient
             }
         }
     }
+    void onImmediateMessageSend(std::string msg, std::promise<bool> &ret)
+    {
+        try
+        {
+            if (!NULLNEXUS_VALIDWS)
+            {
+                ret.set_value(false);
+                return;
+            }
+            NULLNEXUS_GETWS(write(net::buffer(msg)));
+            ret.set_value(true);
+        }
+        catch (...)
+        {
+            ret.set_value(false);
+            return;
+        }
+    }
+    void onAsyncMessageSend(std::string msg)
+    {
+        // Push into a queue
+        messages.push(msg);
+        // Try to send said queue
+        trySendMessageQueue();
+    }
     /* ~Functions for handling the sending of messages~ */
+
+    // React to the timer being activated
+    void handler_startDelayTimer(const boost::system::error_code &ec)
+    {
+        if (ec)
+            return;
+        doConnectionAttempt();
+    }
+
+    // Use the io_context+worker to sheudule a restart/start
+    void scheduleDelayedStart()
+    {
+        start_delay_timer.cancel();
+        start_delay_timer.expires_from_now(boost::posix_time::seconds(RESTART_WAIT_TIME));
+        start_delay_timer.async_wait(std::bind(&WebSocketClient::handler_startDelayTimer, this, std::placeholders::_1));
+    }
+    void internalStart(std::promise<void> *ret)
+    {
+        if (is_running)
+            return;
+        is_running = true;
+        doConnectionAttempt(ret);
+    }
+    void internalStop(std::promise<void> &ret)
+    {
+        if (!is_running)
+            return;
+        is_running = false;
+        start_delay_timer.cancel();
+        // Stop message queue from running while stopped
+        message_queue_timer.cancel();
+        if (NULLNEXUS_VALIDWS)
+        {
+            NULLNEXUS_GETWS(close(websocket::close_code::normal));
+        }
+        ret.set_value();
+    }
+
+    void internalSetCustomHeaders(std::vector<std::pair<std::string, std::string>> headers, std::promise<void> &ret)
+    {
+        custom_connect_headers = headers;
+        ret.set_value();
+    }
 
 public:
     void start(bool async = false)
     {
-        std::lock_guard lock(mutex);
-        if (shouldBeActive)
-            return;
-        shouldBeActive = true;
-        internalStart(async);
+        if (async)
+            // Let boost deal with anything related to thread safety
+            net::post(ioc, std::bind(&WebSocketClient::internalStart, this, nullptr));
+        else
+        {
+            std::promise<void> ret;
+            auto future = ret.get_future();
+            // Let boost deal with anything related to thread safety
+            net::post(ioc, std::bind(&WebSocketClient::internalStart, this, &ret));
+            future.wait();
+        }
     }
     void stop()
     {
-        std::lock_guard lock(mutex);
-        if (!shouldBeActive)
-            return;
-        shouldBeActive = false;
-        internalStop();
-        log("CO: Stopped!");
+        std::promise<void> ret;
+        auto future = ret.get_future();
+        // Let boost deal with anything related to thread safety
+        net::post(ioc, std::bind(&WebSocketClient::internalStop, this, std::ref(ret)));
+        future.wait();
     }
 
     bool sendMessage(std::string msg, bool sendIfOffline = false)
     {
-        std::lock_guard lock(mutex);
         if (sendIfOffline)
         {
-            // Push into a queue
-            messages.push(msg);
-            // Try to send said queue
-            trySendMessageQueue();
+            // Let the worker thread handle this safely
+            net::post(ioc, std::bind(&WebSocketClient::onAsyncMessageSend, this, msg));
+            return true;
         }
         else
         {
-            try
-            {
-                if (!NULLNEXUS_VALIDWS)
-                    return false;
-                NULLNEXUS_GETWS(write(net::buffer(msg)));
-            }
-            catch (...)
-            {
-                return false;
-            }
+            std::promise<bool> ret;
+            auto future = ret.get_future();
+            // Let the worker thread handle this safely
+            net::post(ioc, std::bind(&WebSocketClient::onImmediateMessageSend, this, msg, std::ref(ret)));
+            future.wait();
+            return future.get();
         }
-        return true;
     }
 
     void setCustomHeaders(std::vector<std::pair<std::string, std::string>> headers)
     {
-        std::lock_guard lock(mutex);
-        custom_connect_headers = headers;
+        std::promise<void> ret;
+        auto future = ret.get_future();
+        net::post(ioc, std::bind(&WebSocketClient::internalSetCustomHeaders, this, headers, std::ref(ret)));
+        future.wait();
     }
 
     WebSocketClient(std::string host, std::string port, std::string endpoint, std::function<void(std::string)> callback) : host(host), port(port), endpoint(endpoint), callback(callback)
     {
         isunix = false;
+        work.emplace(ioc.get_executor());
+        worker.emplace(std::bind(&WebSocketClient::runIO, this));
     }
 #ifdef __linux__
     WebSocketClient(std::string unixsocket_addr, std::string endpoint, std::function<void(std::string)> callback) : host(unixsocket_addr), endpoint(endpoint), callback(callback)
     {
         isunix = true;
+        work.emplace(ioc.get_executor());
+        worker.emplace(std::bind(&WebSocketClient::runIO, this));
     }
 #endif
 
     ~WebSocketClient()
     {
         stop();
+        work->reset();
+        worker->join();
     }
 };
 
