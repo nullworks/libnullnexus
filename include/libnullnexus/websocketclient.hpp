@@ -285,14 +285,20 @@ class WebSocketClient
     void internalStart(std::promise<void> *ret)
     {
         if (is_running)
+        {
+            ret->set_value();
             return;
+        }
         is_running = true;
         doConnectionAttempt(ret);
     }
     void internalStop(std::promise<void> &ret)
     {
         if (!is_running)
+        {
+            ret.set_value();
             return;
+        }
         is_running = false;
         start_delay_timer.cancel();
         // Stop message queue from running while stopped
