@@ -286,7 +286,8 @@ class WebSocketClient
     {
         if (is_running)
         {
-            ret->set_value();
+            if (ret)
+                ret->set_value();
             return;
         }
         is_running = true;
