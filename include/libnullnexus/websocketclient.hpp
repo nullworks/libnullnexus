@@ -119,6 +119,8 @@ class WebSocketClient
             // Something is waiting for the first connection attempt to finish
             if (ret)
                 ret->set_value();
+            if (ec == net::error::basic_errors::operation_aborted)
+                return;
             scheduleDelayedStart();
             return;
         }
@@ -304,6 +306,8 @@ class WebSocketClient
         start_delay_timer.cancel();
         // Stop message queue from running while stopped
         message_queue_timer.cancel();
+        if (tcpws)
+            tcpws->next_layer().cancel();
         if (NULLNEXUS_VALIDWS)
         {
             NULLNEXUS_GETWS(close(websocket::close_code::normal));
@@ -386,7 +390,7 @@ public:
     ~WebSocketClient()
     {
         stop();
-        work->reset();
+        work.reset();
         worker->join();
     }
 };

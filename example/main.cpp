@@ -2,6 +2,7 @@
  * https://creativecommons.org/publicdomain/zero/1.0/ */
 
 #include "libnullnexus/nullnexus.hpp"
+#include <iostream>
 
 void msg(std::string username, std::string msg, int colour)
 {
