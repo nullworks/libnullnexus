@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Note: Boost has a deprecation message telling us to use BOOST_BIND_GLOBAL_PLACEHOLDERS, but we don't use the global placeholders, so this is not a problem for us.
+// This actually seems to be caused by a faulty include made by boost itself.
 #include <boost/asio/connect.hpp>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/ip/tcp.hpp>
