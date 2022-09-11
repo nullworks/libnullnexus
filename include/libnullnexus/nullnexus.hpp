@@ -128,7 +128,7 @@ public:
     {
         std::random_device rd;
         std::mt19937 mt(rd());
-        std::uniform_real_distribution<double> dist(1000.0, 9000.0);
+        std::uniform_real_distribution<double> dist(1000.0, 10000.0);
         settings_set = true;
         {
             if ((!settings.username && !newsettings.username) || (newsettings.username && *newsettings.username == "anon"))
