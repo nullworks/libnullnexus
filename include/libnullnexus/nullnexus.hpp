@@ -17,16 +17,15 @@ public:
     struct TF2Server
     {
         bool connected;
-        std::string ip;
-        std::string port;
+        std::string server_steamid;
         std::string steamid;
         int server_spawn_count;
 
         bool operator==(TF2Server &other) const
         {
-            return connected == other.connected && ip == other.ip && port == other.port && steamid == other.steamid && server_spawn_count == other.server_spawn_count;
+            return connected == other.connected && server_steamid == other.server_steamid && steamid == other.steamid && server_spawn_count == other.server_spawn_count;
         }
-        explicit TF2Server(bool connected = false, std::string ip = "", std::string port = "", std::string steamid = "", int server_spawn_count = -1) : connected(connected), ip(std::move(ip)), port(std::move(port)), steamid(std::move(steamid)), server_spawn_count(server_spawn_count)
+        explicit TF2Server(bool connected = false, std::string server_steamid = "", std::string steamid = "", int server_spawn_count = -1) : connected(connected), server_steamid(std::move(server_steamid)), steamid(std::move(steamid)), server_spawn_count(server_spawn_count)
         {
         }
     };
@@ -113,8 +112,7 @@ private:
         std::vector<std::pair<std::string, std::string>> headers = { { "nullnexus_colour", std::to_string(*settings.colour) } };
         if (settings.tf2server && settings.tf2server->connected)
         {
-            headers.emplace_back("nullnexus_server_ip", settings.tf2server->ip);
-            headers.emplace_back("nullnexus_server_port", settings.tf2server->port);
+            headers.emplace_back("nullnexus_server_server_steamid", settings.tf2server->server_steamid);
             headers.emplace_back("nullnexus_server_steamid", settings.tf2server->steamid);
             headers.emplace_back("nullnexus_server_server_spawn_count", std::to_string(settings.tf2server->server_spawn_count));
         }
@@ -159,10 +157,9 @@ public:
             pt_server.put("connected", newsettings.tf2server->connected);
             if (newsettings.tf2server->connected)
             {
-                pt_server.put("ip", newsettings.tf2server->ip);
-                pt_server.put("port", newsettings.tf2server->port);
+                pt_server.put("server_steamid", newsettings.tf2server->server_steamid);
                 pt_server.put("steamid", newsettings.tf2server->steamid);
-                pt_server.put("server_spawn_count", std::to_string(settings.tf2server->server_spawn_count));
+                pt_server.put("server_spawn_count", std::to_string(newsettings.tf2server->server_spawn_count));
             }
             settings.tf2server = *newsettings.tf2server;
             pt.put_child("server", pt_server);
